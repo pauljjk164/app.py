@@ -15,7 +15,7 @@ import os
 from datetime import datetime, timedelta
 
 # ========== CONFIGURATION ==========
-BOT_TOKEN = os.getenv('BOT_TOKEN')
+BOT_TOKEN = os.getenv('8161112328:AAEgZCq_RPbqklrfSsE-p0YVbhiNH53snP4')
 WITHDRAWAL_CHANNEL = "https://t.me/INVITORCASHPH"
 ARENA_LIVE_URL = "https://arenalive.ph/s/JOyiswx"
 PUZZLE_REWARD = 200  # Updated to ₱200 per win
