@@ -39,8 +39,8 @@ logger = logging.getLogger(__name__)
 
 # Bot configuration
 TOKEN = "8161112328:AAEgZCq_RPbqklrfSsE-p0YVbhiNH53snP4"
-REQUIRED_CHANNEL = "@INVITORCASHPH"
-ARENA_LIVE_LINK = "https://arenalive.ph/s/JOyiswx"
+REQUIRED_CHANNEL = "@INVITORCASHPH"  # Users must join this channel
+ARENA_LIVE_LINK = "https://arenalive.ph/s/9dKo9ss"  # Updated partner link
 CAPTCHA_REWARD = 50
 INVITE_REWARD = 30
 MIN_WITHDRAWAL = 5000
@@ -54,13 +54,13 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Game Cash PH Bot is running!", 200
+    return "INVITOR CASH PH BOT is running!", 200
 
 def run_flask():
     app.run(host='0.0.0.0', port=PORT)
 
 # Conversation states
-VERIFICATION, CAPTCHA_GAME, WITHDRAW_AMOUNT, WITHDRAW_INFO = range(4)
+VERIFICATION, CHANNEL_JOIN, CAPTCHA_GAME, WITHDRAW_AMOUNT, WITHDRAW_INFO = range(5)
 
 # Database setup
 conn = sqlite3.connect('game_cash.db', check_same_thread=False)
@@ -77,7 +77,8 @@ c.execute('''CREATE TABLE IF NOT EXISTS users
               verified BOOLEAN DEFAULT 0,
               verification_time TEXT,
               withdrawal_pending BOOLEAN DEFAULT 0,
-              registration_time TEXT)''')
+              registration_time TEXT,
+              channel_joined BOOLEAN DEFAULT 0)''')  # Added channel_joined
 
 c.execute('''CREATE TABLE IF NOT EXISTS captchas
              (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -146,6 +147,15 @@ def set_verified(user_id):
         return True
     except Exception as e:
         logger.error(f"Database error in set_verified: {e}")
+        return False
+
+def set_channel_joined(user_id):
+    try:
+        c.execute("UPDATE users SET channel_joined=1 WHERE user_id=?", (user_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Database error in set_channel_joined: {e}")
         return False
 
 def set_withdrawal_pending(user_id, status):
@@ -257,15 +267,16 @@ def start(update: Update, context: CallbackContext) -> int:
         # Get updated user data
         user_data = get_user(user.id)
         
-        # Check verification status
-        if not user_data[6]:  # verified field
+        # Check if user can verify
+        if not user_data[6] and can_verify(user.id):
+            # Show verification button
             context.bot.send_message(
                 chat_id=user.id,
                 text=f"🌟 *Welcome to Game Cash PH!* 🌟\n\n"
-                     "To start earning, you must complete verification:\n"
+                     "You can now complete verification:\n"
                      f"1. Register at our partner site: [Arena Live]({ARENA_LIVE_LINK})\n"
-                     "2. Complete registration and wait 3 minutes\n\n"
-                     "Return here after completion to begin!",
+                     "2. Click the button below after registration\n\n"
+                     "⚠️ You MUST join our channel to withdraw funds!",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("✅ I've Completed Registration", callback_data="verify")
@@ -273,7 +284,37 @@ def start(update: Update, context: CallbackContext) -> int:
             )
             return VERIFICATION
         
-        # Show main menu
+        # If not verified and can't verify yet
+        if not user_data[6]:
+            remaining_time = get_remaining_wait_time(user.id)
+            minutes = remaining_time // 60
+            seconds = remaining_time % 60
+            
+            context.bot.send_message(
+                chat_id=user.id,
+                text=f"⏳ *Please wait {minutes:02d}:{seconds:02d}*\n\n"
+                     "You need to wait 3 minutes after registration before you can verify.\n\n"
+                     "Please come back in a few minutes!",
+                parse_mode="Markdown"
+            )
+            return -1
+        
+        # If verified but hasn't joined channel
+        if user_data[6] and not user_data[10]:
+            context.bot.send_message(
+                chat_id=user.id,
+                text="📢 *CHANNEL JOIN REQUIRED* 📢\n\n"
+                     "To access all features, you MUST join our official channel:\n"
+                     f"👉 {REQUIRED_CHANNEL}\n\n"
+                     "Please join and click the button below:",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ I've Joined the Channel", callback_data="join_channel")
+                ]])
+            )
+            return CHANNEL_JOIN
+        
+        # Show main menu if fully verified
         show_main_menu(update, context)
         return -1
     except Exception as e:
@@ -290,37 +331,55 @@ def verify_callback(update: Update, context: CallbackContext) -> int:
         query = update.callback_query
         query.answer()
         user_id = query.from_user.id
-        user_data = get_user(user_id)
         
-        if not user_data[6]:  # If not verified
-            if can_verify(user_id):
-                set_verified(user_id)
-                query.edit_message_text(
-                    text="✅ *Verification Complete!*\n\n"
-                         "You can now start earning with Game Cash PH!\n\n"
-                         f"⚡ Earn ₱{CAPTCHA_REWARD} for each captcha solved\n"
-                         f"👥 Earn ₱{INVITE_REWARD} for each friend invited",
-                    parse_mode="Markdown"
-                )
-                show_main_menu(update, context)
-                return -1
-            else:
-                remaining_time = get_remaining_wait_time(user_id)
-                minutes = remaining_time // 60
-                seconds = remaining_time % 60
-                query.edit_message_text(
-                    text=f"⏳ *Please wait {minutes:02d}:{seconds:02d} more*\n\n"
-                         "You need to wait 3 minutes after registration before you can verify.\n\n"
-                         "Please come back in a few minutes!",
-                    parse_mode="Markdown",
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("🔄 Try Again", callback_data="verify")
-                    ]])
-                )
-                return VERIFICATION
-        return -1
+        # Set user as verified
+        if set_verified(user_id):
+            query.edit_message_text(
+                text="✅ *Verification Complete!*\n\n"
+                     "You're almost ready to start earning!\n\n"
+                     "📢 *JOIN OUR CHANNEL REQUIRED* 📢\n"
+                     f"Please join: {REQUIRED_CHANNEL}\n"
+                     "to access all features and withdraw funds.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ I've Joined the Channel", callback_data="join_channel")
+                ]])
+            )
+            return CHANNEL_JOIN
+        else:
+            query.edit_message_text(
+                text="⚠️ Verification failed. Please try again later."
+            )
+            return -1
     except Exception as e:
         logger.error(f"Error in verify_callback: {e}")
+        return -1
+
+# Channel join verification
+def join_channel_callback(update: Update, context: CallbackContext) -> int:
+    try:
+        query = update.callback_query
+        query.answer()
+        user_id = query.from_user.id
+        
+        # Set user as joined channel
+        if set_channel_joined(user_id):
+            query.edit_message_text(
+                text="🎉 *Setup Complete!* 🎉\n\n"
+                     "You're now ready to start earning with INVITOR CASH PH!\n\n"
+                     f"⚡ Earn ₱{CAPTCHA_REWARD} for each captcha solved\n"
+                     f"👥 Earn ₱{INVITE_REWARD} for each friend invited",
+                parse_mode="Markdown"
+            )
+            show_main_menu(update, context)
+            return -1
+        else:
+            query.edit_message_text(
+                text="⚠️ Failed to verify channel join. Please try again."
+            )
+            return CHANNEL_JOIN
+    except Exception as e:
+        logger.error(f"Error in join_channel_callback: {e}")
         return -1
 
 # Main menu display
@@ -359,6 +418,16 @@ def show_main_menu(update: Update, context: CallbackContext):
 def start_captcha_game(update: Update, context: CallbackContext) -> int:
     try:
         user_id = update.effective_user.id
+        user_data = get_user(user_id)
+        
+        # Check if user has joined channel
+        if not user_data or not user_data[10]:
+            update.message.reply_text(
+                "⚠️ You must join our channel first!\n"
+                f"Please join: {REQUIRED_CHANNEL}\n"
+                "and try again."
+            )
+            return -1
         
         # Generate captcha
         captcha_file, captcha_solution = generate_captcha()
@@ -435,6 +504,15 @@ def invite_friends(update: Update, context: CallbackContext):
             update.message.reply_text("⚠️ Your account couldn't be loaded. Please restart with /start")
             return
             
+        # Check if user has joined channel
+        if not user_data[10]:
+            update.message.reply_text(
+                "⚠️ You must join our channel first!\n"
+                f"Please join: {REQUIRED_CHANNEL}\n"
+                "and try again."
+            )
+            return
+            
         invite_code = user_data[3]
         invite_link = f"https://t.me/{context.bot.username}?start={invite_code}"
         
@@ -457,6 +535,15 @@ def start_withdrawal(update: Update, context: CallbackContext) -> int:
         user_data = get_user(user_id)
         if not user_data:
             update.message.reply_text("⚠️ Your account couldn't be loaded. Please restart with /start")
+            return -1
+            
+        # Check if user has joined channel
+        if not user_data[10]:
+            update.message.reply_text(
+                "⚠️ You must join our channel first!\n"
+                f"Please join: {REQUIRED_CHANNEL}\n"
+                "and try again."
+            )
             return -1
             
         balance = user_data[2]
@@ -581,6 +668,15 @@ def check_balance(update: Update, context: CallbackContext):
             update.message.reply_text("⚠️ Your account couldn't be loaded. Please restart with /start")
             return
             
+        # Check if user has joined channel
+        if not user_data[10]:
+            update.message.reply_text(
+                "⚠️ You must join our channel first!\n"
+                f"Please join: {REQUIRED_CHANNEL}\n"
+                "and try again."
+            )
+            return
+            
         balance = user_data[2]
         invite_count = user_data[5]
         total_earned = invite_count * INVITE_REWARD
@@ -606,6 +702,49 @@ def cancel(update: Update, context: CallbackContext) -> int:
         logger.error(f"Error in cancel: {e}")
         return -1
 
+# Handle other messages
+def handle_other_messages(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    user_data = get_user(user_id)
+    
+    if not user_data:
+        context.bot.send_message(
+            user_id,
+            "Please start with /start to begin"
+        )
+        return
+    
+    if not user_data[6]:  # Not verified
+        remaining_time = get_remaining_wait_time(user_id)
+        minutes = remaining_time // 60
+        seconds = remaining_time % 60
+        
+        if can_verify(user_id):
+            context.bot.send_message(
+                user_id,
+                "You can now complete verification!\n"
+                "Please use /start to continue",
+            )
+        else:
+            context.bot.send_message(
+                user_id,
+                f"⏳ Please wait {minutes:02d}:{seconds:02d} before you can verify\n"
+                "Use /start after the waiting period",
+            )
+        return
+    
+    if user_data[6] and not user_data[10]:  # Verified but not joined channel
+        context.bot.send_message(
+            user_id,
+            "⚠️ You must join our channel to continue!\n"
+            f"Please join: {REQUIRED_CHANNEL}\n"
+            "and use /start again",
+        )
+        return
+    
+    # Show main menu for other messages
+    show_main_menu(update, context)
+
 # Main bot function
 def main() -> None:
     # Start Flask server in a separate thread
@@ -621,12 +760,13 @@ def main() -> None:
     # Add handlers
     dispatcher.add_handler(CommandHandler('start', start))
     dispatcher.add_handler(CallbackQueryHandler(verify_callback, pattern='^verify$'))
+    dispatcher.add_handler(CallbackQueryHandler(join_channel_callback, pattern='^join_channel$'))
     dispatcher.add_handler(MessageHandler(Filters.regex('^🎮 Play Captcha Game$'), start_captcha_game))
     dispatcher.add_handler(MessageHandler(Filters.regex('^👥 Invite & Earn$'), invite_friends))
     dispatcher.add_handler(MessageHandler(Filters.regex('^💰 Withdraw$'), start_withdrawal))
     dispatcher.add_handler(MessageHandler(Filters.regex('^💼 My Balance$'), check_balance))
     
-    # Conversation handler for captcha game
+    # Conversation handlers
     captcha_conv = ConversationHandler(
         entry_points=[],
         states={
@@ -635,7 +775,6 @@ def main() -> None:
         fallbacks=[CommandHandler('cancel', cancel)]
     )
 
-    # Conversation handler for withdrawal
     withdrawal_conv = ConversationHandler(
         entry_points=[],
         states={
@@ -645,6 +784,9 @@ def main() -> None:
         fallbacks=[CommandHandler('cancel', cancel)]
     )
 
+    # Handle all other messages
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_other_messages))
+    
     dispatcher.add_handler(captcha_conv)
     dispatcher.add_handler(withdrawal_conv)
     
