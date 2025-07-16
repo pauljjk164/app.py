@@ -5,7 +5,7 @@ import sqlite3
 import logging
 import string
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from captcha.image import ImageCaptcha
 from flask import Flask, request
 from telegram import (
@@ -38,7 +38,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Bot configuration
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TOKEN = "8161112328:AAEgZCq_RPbqklrfSsE-p0YVbhiNH53snP4"
 REQUIRED_CHANNEL = "@INVITORCASHPH"
 ARENA_LIVE_LINK = "https://arenalive.ph/s/JOyiswx"
 CAPTCHA_REWARD = 50
@@ -47,6 +47,7 @@ MIN_WITHDRAWAL = 5000
 MAX_WITHDRAWAL = 20000
 REQUIRED_INVITES = 10
 PORT = int(os.environ.get('PORT', 5000))
+VERIFICATION_WAIT_TIME = 180  # 3 minutes in seconds
 
 # Create Flask app for keep-alive
 app = Flask(__name__)
@@ -75,7 +76,8 @@ c.execute('''CREATE TABLE IF NOT EXISTS users
               invite_count INTEGER DEFAULT 0,
               verified BOOLEAN DEFAULT 0,
               verification_time TEXT,
-              withdrawal_pending BOOLEAN DEFAULT 0)''')
+              withdrawal_pending BOOLEAN DEFAULT 0,
+              registration_time TEXT)''')
 
 c.execute('''CREATE TABLE IF NOT EXISTS captchas
              (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,12 +106,13 @@ def get_user(user_id):
 def create_user(user_id, username, invited_by=None):
     try:
         invite_code = f"ref{random.randint(10000, 99999)}"
+        registration_time = datetime.now().isoformat()
         if invited_by:
-            c.execute("INSERT INTO users (user_id, username, invite_code, invited_by) VALUES (?, ?, ?, ?)", 
-                     (user_id, username, invite_code, invited_by))
+            c.execute("INSERT INTO users (user_id, username, invite_code, invited_by, registration_time) VALUES (?, ?, ?, ?, ?)", 
+                     (user_id, username, invite_code, invited_by, registration_time))
         else:
-            c.execute("INSERT INTO users (user_id, username, invite_code) VALUES (?, ?, ?)", 
-                     (user_id, username, invite_code))
+            c.execute("INSERT INTO users (user_id, username, invite_code, registration_time) VALUES (?, ?, ?, ?)", 
+                     (user_id, username, invite_code, registration_time))
         conn.commit()
         return invite_code
     except Exception as e:
@@ -176,6 +179,39 @@ def save_captcha(user_id, solution):
         logger.error(f"Database error in save_captcha: {e}")
         return False
 
+def can_verify(user_id):
+    """Check if user can verify (3 minutes have passed since registration)"""
+    try:
+        user_data = get_user(user_id)
+        if not user_data or not user_data[9]:  # registration_time
+            return False
+        
+        registration_time = datetime.fromisoformat(user_data[9])
+        current_time = datetime.now()
+        time_diff = current_time - registration_time
+        
+        return time_diff.total_seconds() >= VERIFICATION_WAIT_TIME
+    except Exception as e:
+        logger.error(f"Error in can_verify: {e}")
+        return False
+
+def get_remaining_wait_time(user_id):
+    """Get remaining wait time in seconds"""
+    try:
+        user_data = get_user(user_id)
+        if not user_data or not user_data[9]:
+            return 0
+        
+        registration_time = datetime.fromisoformat(user_data[9])
+        current_time = datetime.now()
+        elapsed = current_time - registration_time
+        remaining = VERIFICATION_WAIT_TIME - elapsed.total_seconds()
+        
+        return max(0, int(remaining))
+    except Exception as e:
+        logger.error(f"Error in get_remaining_wait_time: {e}")
+        return 0
+
 # Generate CAPTCHA image
 def generate_captcha():
     try:
@@ -196,7 +232,7 @@ def generate_captcha():
         return None, None
 
 # Start command handler
-def start(update: Update, context: CallbackContext) -> None:
+def start(update: Update, context: CallbackContext) -> int:
     try:
         user = update.effective_user
         username = user.username or user.first_name or "User"
@@ -217,18 +253,18 @@ def start(update: Update, context: CallbackContext) -> None:
             if invited_by:
                 update_balance(invited_by, INVITE_REWARD)
                 increment_invite_count(invited_by)
-        else:
-            invite_code = user_data[3]
+        
+        # Get updated user data
+        user_data = get_user(user.id)
         
         # Check verification status
-        user_data = get_user(user.id)
         if not user_data[6]:  # verified field
             context.bot.send_message(
                 chat_id=user.id,
                 text=f"🌟 *Welcome to Game Cash PH!* 🌟\n\n"
                      "To start earning, you must complete verification:\n"
                      f"1. Register at our partner site: [Arena Live]({ARENA_LIVE_LINK})\n"
-                     "2. Complete registration and wait 2 minutes\n\n"
+                     "2. Complete registration and wait 3 minutes\n\n"
                      "Return here after completion to begin!",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([[
@@ -239,34 +275,53 @@ def start(update: Update, context: CallbackContext) -> None:
         
         # Show main menu
         show_main_menu(update, context)
+        return -1
     except Exception as e:
         logger.error(f"Error in start command: {e}")
         context.bot.send_message(
             chat_id=update.effective_chat.id,
             text="⚠️ An error occurred. Please try again later."
         )
+        return -1
 
 # Verification process
 def verify_callback(update: Update, context: CallbackContext) -> int:
     try:
         query = update.callback_query
+        query.answer()
         user_id = query.from_user.id
         user_data = get_user(user_id)
         
         if not user_data[6]:  # If not verified
-            set_verified(user_id)
-            query.edit_message_text(
-                text="✅ *Verification Complete!*\n\n"
-                     "You can now start earning with Game Cash PH!\n\n"
-                     f"⚡ Earn ₱{CAPTCHA_REWARD} for each captcha solved\n"
-                     f"👥 Earn ₱{INVITE_REWARD} for each friend invited",
-                parse_mode="Markdown"
-            )
-            show_main_menu(update, context)
-        return ConversationHandler.END
+            if can_verify(user_id):
+                set_verified(user_id)
+                query.edit_message_text(
+                    text="✅ *Verification Complete!*\n\n"
+                         "You can now start earning with Game Cash PH!\n\n"
+                         f"⚡ Earn ₱{CAPTCHA_REWARD} for each captcha solved\n"
+                         f"👥 Earn ₱{INVITE_REWARD} for each friend invited",
+                    parse_mode="Markdown"
+                )
+                show_main_menu(update, context)
+                return -1
+            else:
+                remaining_time = get_remaining_wait_time(user_id)
+                minutes = remaining_time // 60
+                seconds = remaining_time % 60
+                query.edit_message_text(
+                    text=f"⏳ *Please wait {minutes:02d}:{seconds:02d} more*\n\n"
+                         "You need to wait 3 minutes after registration before you can verify.\n\n"
+                         "Please come back in a few minutes!",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔄 Try Again", callback_data="verify")
+                    ]])
+                )
+                return VERIFICATION
+        return -1
     except Exception as e:
         logger.error(f"Error in verify_callback: {e}")
-        return ConversationHandler.END
+        return -1
 
 # Main menu display
 def show_main_menu(update: Update, context: CallbackContext):
@@ -294,7 +349,7 @@ def show_main_menu(update: Update, context: CallbackContext):
             reply_markup=ReplyKeyboardMarkup(
                 menu_options, 
                 resize_keyboard=True,
-                one_time_keyboard=True
+                one_time_keyboard=False
             )
         )
     except Exception as e:
@@ -309,7 +364,7 @@ def start_captcha_game(update: Update, context: CallbackContext) -> int:
         captcha_file, captcha_solution = generate_captcha()
         if not captcha_file or not captcha_solution:
             update.message.reply_text("⚠️ Failed to generate CAPTCHA. Please try again later.")
-            return ConversationHandler.END
+            return -1
         
         # Save captcha solution
         save_captcha(user_id, captcha_solution)
@@ -331,7 +386,7 @@ def start_captcha_game(update: Update, context: CallbackContext) -> int:
         return CAPTCHA_GAME
     except Exception as e:
         logger.error(f"Error in start_captcha_game: {e}")
-        return ConversationHandler.END
+        return -1
 
 # Captcha answer handler
 def handle_captcha_answer(update: Update, context: CallbackContext) -> int:
@@ -365,10 +420,11 @@ def handle_captcha_answer(update: Update, context: CallbackContext) -> int:
                 parse_mode="Markdown"
             )
         
-        return ConversationHandler.END
+        show_main_menu(update, context)
+        return -1
     except Exception as e:
         logger.error(f"Error in handle_captcha_answer: {e}")
-        return ConversationHandler.END
+        return -1
 
 # Invite system
 def invite_friends(update: Update, context: CallbackContext):
@@ -401,7 +457,7 @@ def start_withdrawal(update: Update, context: CallbackContext) -> int:
         user_data = get_user(user_id)
         if not user_data:
             update.message.reply_text("⚠️ Your account couldn't be loaded. Please restart with /start")
-            return ConversationHandler.END
+            return -1
             
         balance = user_data[2]
         
@@ -410,7 +466,7 @@ def start_withdrawal(update: Update, context: CallbackContext) -> int:
                 f"❌ Minimum withdrawal is ₱{MIN_WITHDRAWAL:.2f}\n"
                 f"Your current balance: ₱{balance:.2f}"
             )
-            return ConversationHandler.END
+            return -1
         
         update.message.reply_text(
             f"💰 *WITHDRAW FUNDS* 💰\n\n"
@@ -423,7 +479,7 @@ def start_withdrawal(update: Update, context: CallbackContext) -> int:
         return WITHDRAW_AMOUNT
     except Exception as e:
         logger.error(f"Error in start_withdrawal: {e}")
-        return ConversationHandler.END
+        return -1
 
 def handle_withdrawal_amount(update: Update, context: CallbackContext) -> int:
     try:
@@ -432,10 +488,9 @@ def handle_withdrawal_amount(update: Update, context: CallbackContext) -> int:
         user_data = get_user(user_id)
         if not user_data:
             update.message.reply_text("⚠️ Your account couldn't be loaded. Please restart with /start")
-            return ConversationHandler.END
+            return -1
             
         balance = user_data[2]
-        invite_count = user_data[5]
         
         if amount < MIN_WITHDRAWAL or amount > MAX_WITHDRAWAL:
             update.message.reply_text(
@@ -467,7 +522,7 @@ def handle_withdrawal_amount(update: Update, context: CallbackContext) -> int:
         return WITHDRAW_AMOUNT
     except Exception as e:
         logger.error(f"Error in handle_withdrawal_amount: {e}")
-        return ConversationHandler.END
+        return -1
 
 def handle_wallet_info(update: Update, context: CallbackContext) -> int:
     try:
@@ -477,7 +532,7 @@ def handle_wallet_info(update: Update, context: CallbackContext) -> int:
         user_data = get_user(user_id)
         if not user_data:
             update.message.reply_text("⚠️ Your account couldn't be loaded. Please restart with /start")
-            return ConversationHandler.END
+            return -1
             
         invite_count = user_data[5]
         invite_code = user_data[3]
@@ -486,7 +541,7 @@ def handle_wallet_info(update: Update, context: CallbackContext) -> int:
         # Save withdrawal request
         if not save_withdrawal(user_id, amount, wallet_info):
             update.message.reply_text("⚠️ Failed to process withdrawal. Please try again later.")
-            return ConversationHandler.END
+            return -1
         
         # Check if user needs to invite others
         if invite_count < REQUIRED_INVITES:
@@ -499,8 +554,7 @@ def handle_wallet_info(update: Update, context: CallbackContext) -> int:
                 f"2. You'll receive ₱{INVITE_REWARD:.2f} for each successful invite\n"
                 "3. Withdrawal will be processed automatically when you reach 10 invites\n\n"
                 "You can continue playing games while waiting!",
-                parse_mode="Markdown",
-                reply_markup=ReplyKeyboardMarkup([['Main Menu']], resize_keyboard=True)
+                parse_mode="Markdown"
             )
             set_withdrawal_pending(user_id, True)
         else:
@@ -509,14 +563,14 @@ def handle_wallet_info(update: Update, context: CallbackContext) -> int:
                 "✅ *WITHDRAWAL SUCCESSFUL!* ✅\n\n"
                 f"Your withdrawal of ₱{amount:.2f} is being processed!\n"
                 "Funds will arrive in your account within 20-30 minutes.",
-                parse_mode="Markdown",
-                reply_markup=ReplyKeyboardMarkup([['Main Menu']], resize_keyboard=True)
+                parse_mode="Markdown"
             )
         
-        return ConversationHandler.END
+        show_main_menu(update, context)
+        return -1
     except Exception as e:
         logger.error(f"Error in handle_wallet_info: {e}")
-        return ConversationHandler.END
+        return -1
 
 # Balance check
 def check_balance(update: Update, context: CallbackContext):
@@ -544,13 +598,13 @@ def check_balance(update: Update, context: CallbackContext):
 def cancel(update: Update, context: CallbackContext) -> int:
     try:
         update.message.reply_text(
-            "Operation cancelled",
-            reply_markup=ReplyKeyboardMarkup([['Main Menu']], resize_keyboard=True)
+            "Operation cancelled"
         )
-        return ConversationHandler.END
+        show_main_menu(update, context)
+        return -1
     except Exception as e:
         logger.error(f"Error in cancel: {e}")
-        return ConversationHandler.END
+        return -1
 
 # Main bot function
 def main() -> None:
@@ -564,19 +618,17 @@ def main() -> None:
     updater = Updater(TOKEN)
     dispatcher = updater.dispatcher
 
-    # Conversation handler for verification
-    verification_conv = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
-        states={
-            VERIFICATION: [CallbackQueryHandler(verify_callback, pattern='^verify$')],
-        },
-        fallbacks=[],
-        map_to_parent={ConversationHandler.END: ConversationHandler.END}
-    )
-
+    # Add handlers
+    dispatcher.add_handler(CommandHandler('start', start))
+    dispatcher.add_handler(CallbackQueryHandler(verify_callback, pattern='^verify$'))
+    dispatcher.add_handler(MessageHandler(Filters.regex('^🎮 Play Captcha Game$'), start_captcha_game))
+    dispatcher.add_handler(MessageHandler(Filters.regex('^👥 Invite & Earn$'), invite_friends))
+    dispatcher.add_handler(MessageHandler(Filters.regex('^💰 Withdraw$'), start_withdrawal))
+    dispatcher.add_handler(MessageHandler(Filters.regex('^💼 My Balance$'), check_balance))
+    
     # Conversation handler for captcha game
     captcha_conv = ConversationHandler(
-        entry_points=[MessageHandler(Filters.regex('^🎮 Play Captcha Game$'), start_captcha_game)],
+        entry_points=[],
         states={
             CAPTCHA_GAME: [MessageHandler(Filters.text & ~Filters.command, handle_captcha_answer)],
         },
@@ -585,7 +637,7 @@ def main() -> None:
 
     # Conversation handler for withdrawal
     withdrawal_conv = ConversationHandler(
-        entry_points=[MessageHandler(Filters.regex('^💰 Withdraw$'), start_withdrawal)],
+        entry_points=[],
         states={
             WITHDRAW_AMOUNT: [MessageHandler(Filters.text & ~Filters.command, handle_withdrawal_amount)],
             WITHDRAW_INFO: [MessageHandler(Filters.text & ~Filters.command, handle_wallet_info)],
@@ -593,22 +645,8 @@ def main() -> None:
         fallbacks=[CommandHandler('cancel', cancel)]
     )
 
-    # Main conversation handler
-    main_conv = ConversationHandler(
-        entry_points=[verification_conv],
-        states={
-            ConversationHandler.END: [
-                captcha_conv,
-                withdrawal_conv,
-                MessageHandler(Filters.regex('^👥 Invite & Earn$'), invite_friends),
-                MessageHandler(Filters.regex('^💼 My Balance$'), check_balance),
-                MessageHandler(Filters.regex('^Main Menu$'), show_main_menu)
-            ]
-        },
-        fallbacks=[],
-    )
-
-    dispatcher.add_handler(main_conv)
+    dispatcher.add_handler(captcha_conv)
+    dispatcher.add_handler(withdrawal_conv)
     
     # Start the Bot
     updater.start_polling()
