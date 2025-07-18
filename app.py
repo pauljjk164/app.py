@@ -49,8 +49,8 @@ MAX_WITHDRAWAL = 20000
 REQUIRED_INVITES = 10
 PORT = int(os.environ.get('PORT', 5000))
 VERIFICATION_WAIT_TIME = 180  # 3 minutes in seconds
-INITIAL_QUIZ_QUESTIONS = 10
-BONUS_QUESTIONS_PER_INVITE = 5
+INITIAL_QUIZ_QUESTIONS = 20  # Increased to 20 questions
+BONUS_QUESTIONS_PER_INVITE = 10  # Increased bonus questions
 BONUS_QUESTIONS_THRESHOLD = 3  # Invites needed for bonus questions
 
 # Create Flask app for keep-alive
@@ -124,7 +124,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS user_quiz_progress
               answered_correctly BOOLEAN,
               timestamp TEXT)''')
 
-# Create sample quiz questions if none exist
+# Create 40 quiz questions if none exist
 c.execute("SELECT COUNT(*) FROM quiz_questions")
 if c.fetchone()[0] == 0:
     sample_questions = [
@@ -137,7 +137,37 @@ if c.fetchone()[0] == 0:
         ("What is the currency of the Philippines?", "Peso", "Dollar", "Euro", "Yen", 1),
         ("Which festival is celebrated in Cebu?", "Sinulog", "Ati-Atihan", "Dinagyang", "Pahiyas", 1),
         ("What is the tallest mountain in the Philippines?", "Mt. Apo", "Mt. Pulag", "Mt. Mayon", "Mt. Pinatubo", 1),
-        ("Which Philippine president served the longest?", "Ferdinand Marcos", "Gloria Arroyo", "Rodrigo Duterte", "Benigno Aquino", 1)
+        ("Which Philippine president served the longest?", "Ferdinand Marcos", "Gloria Arroyo", "Rodrigo Duterte", "Benigno Aquino", 1),
+        ("What is the national flower of the Philippines?", "Sampaguita", "Rose", "Orchid", "Tulip", 1),
+        ("Which Philippine hero is known as the 'Great Plebeian'?", "Andres Bonifacio", "Jose Rizal", "Apolinario Mabini", "Emilio Aguinaldo", 1),
+        ("What is the traditional Filipino Christmas greeting?", "Maligayang Pasko", "Salamat", "Kumusta", "Paalam", 1),
+        ("Which province is known as the 'Rice Granary of the Philippines'?", "Nueva Ecija", "Pampanga", "Bulacan", "Tarlac", 1),
+        ("What is the traditional Filipino martial art?", "Arnis", "Karate", "Taekwondo", "Kung Fu", 1),
+        ("Which Philippine city is known as the 'City of Smiles'?", "Bacolod", "Cebu", "Davao", "Manila", 1),
+        ("What is the most popular Filipino dessert?", "Halo-halo", "Leche Flan", "Buko Pie", "Mais Con Yelo", 1),
+        ("Which Philippine island is known for its chocolate hills?", "Bohol", "Palawan", "Boracay", "Siargao", 1),
+        ("What is the national tree of the Philippines?", "Narra", "Acacia", "Mahogany", "Mango Tree", 1),
+        ("Which Philippine volcano is known for its perfect cone shape?", "Mayon", "Taal", "Pinatubo", "Kanlaon", 1),
+        ("What is the traditional Filipino boat?", "Bangka", "Yacht", "Speedboat", "Canoe", 1),
+        ("Which Philippine fruit is known as the 'poor man's apple'?", "Chico", "Mango", "Banana", "Pineapple", 1),
+        ("What is the national dance of the Philippines?", "Tinikling", "Cariñosa", "Pandanggo", "Singkil", 1),
+        ("Which Philippine province is known as the 'Land of the Ugs'?", "Quezon", "Laguna", "Cavite", "Batangas", 1),
+        ("What is the traditional Filipino shirt?", "Barong Tagalog", "Kimono", "Saya", "Terno", 1),
+        ("Which Philippine city is known as the 'Summer Capital'?", "Baguio", "Tagaytay", "Baguio", "Davao", 1),
+        ("What is the national animal of the Philippines?", "Carabao", "Tamaraw", "Philippine Eagle", "Monkey", 2),
+        ("Which Philippine festival features street dancing with colorful costumes?", "Sinulog", "Pahiyas", "Panagbenga", "Kadayawan", 1),
+        ("What is the traditional Filipino breakfast?", "Tapsilog", "Adobo", "Sinigang", "Kare-Kare", 1),
+        ("Which Philippine province is known for its pottery?", "Ilocos Sur", "Pampanga", "Bohol", "Albay", 1),
+        ("What is the national gem of the Philippines?", "Pearl", "Diamond", "Ruby", "Emerald", 1),
+        ("Which Philippine island is known for its whale sharks?", "Donsol", "Palawan", "Siargao", "Cebu", 1),
+        ("What is the traditional Filipino courtship dance?", "Cariñosa", "Tinikling", "Pandanggo", "Kuratsa", 1),
+        ("Which Philippine city is known as the 'Walled City'?", "Intramuros", "Vigan", "Cebu", "Davao", 1),
+        ("What is the national leaf of the Philippines?", "Anahaw", "Bamboo", "Coconut", "Banana", 1),
+        ("Which Philippine province is known for its surfing spots?", "Siargao", "La Union", "Baler", "Zambales", 1),
+        ("What is the traditional Filipino noodle dish?", "Pancit", "Spaghetti", "Lasagna", "Carbonara", 1),
+        ("Which Philippine hero wrote 'Noli Me Tangere'?", "Jose Rizal", "Andres Bonifacio", "Apolinario Mabini", "Emilio Aguinaldo", 1),
+        ("What is the national costume for Filipino women?", "Baro't Saya", "Kimono", "Sari", "Ao Dai", 1),
+        ("Which Philippine province is known for its rice terraces?", "Ifugao", "Benguet", "Mountain Province", "Kalinga", 1)
     ]
     
     c.executemany(
@@ -166,6 +196,7 @@ def create_user(user_id, username, invited_by=None):
                 "INSERT INTO users (user_id, username, invite_code, invited_by, registration_time) VALUES (?, ?, ?, ?, ?)",
                 (user_id, username, invite_code, invited_by, registration_time)
             )
+            logger.info(f"New user {user_id} created with referrer {invited_by}")
         else:
             c.execute(
                 "INSERT INTO users (user_id, username, invite_code, registration_time) VALUES (?, ?, ?, ?)",
@@ -179,20 +210,34 @@ def create_user(user_id, username, invited_by=None):
 
 def update_balance(user_id, amount):
     try:
-        c.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount, user_id))
+        # Get current balance first
+        c.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+        result = c.fetchone()
+        current_balance = result[0] if result else 0
+        
+        c.execute("UPDATE users SET balance = ? WHERE user_id=?", 
+                 (current_balance + amount, user_id))
         conn.commit()
+        logger.info(f"Updated balance for {user_id}: +₱{amount} (New balance: {current_balance + amount})")
         return True
     except Exception as e:
-        logger.error(f"Database error in update_balance: {e}")
+        logger.error(f"Database error in update_balance for user {user_id}: {e}")
         return False
 
 def increment_invite_count(user_id):
     try:
-        c.execute("UPDATE users SET invite_count = invite_count + 1 WHERE user_id=?", (user_id,))
+        # Get current count first
+        c.execute("SELECT invite_count FROM users WHERE user_id=?", (user_id,))
+        result = c.fetchone()
+        current_count = result[0] if result else 0
+        
+        c.execute("UPDATE users SET invite_count = ? WHERE user_id=?", 
+                 (current_count + 1, user_id))
         conn.commit()
+        logger.info(f"Incremented invite count for {user_id} (New count: {current_count + 1})")
         return True
     except Exception as e:
-        logger.error(f"Database error in increment_invite_count: {e}")
+        logger.error(f"Database error in increment_invite_count for user {user_id}: {e}")
         return False
 
 def set_verified(user_id):
@@ -202,6 +247,15 @@ def set_verified(user_id):
             "UPDATE users SET verified=1, verification_time=? WHERE user_id=?",
             (verification_time, user_id)
         )
+        
+        # Reward referrer after successful verification
+        c.execute("SELECT invited_by FROM users WHERE user_id=?", (user_id,))
+        referrer = c.fetchone()
+        if referrer and referrer[0]:
+            update_balance(referrer[0], INVITE_REWARD)
+            increment_invite_count(referrer[0])
+            logger.info(f"Rewarded referrer {referrer[0]} for verified user {user_id}")
+        
         conn.commit()
         return True
     except Exception as e:
@@ -398,8 +452,8 @@ def generate_captcha():
         # Generate random 5-character string
         captcha_text = ''.join(random.choices(string.ascii_uppercase + string.digits, k=5))
         
-        # Create image captcha
-        image = ImageCaptcha(width=280, height=90, font_sizes=[42, 50, 56])
+        # Create image captcha with font size as single value for compatibility
+        image = ImageCaptcha(width=280, height=90, font_sizes=[48])
         
         # Save to temporary file
         filename = f"captcha_{captcha_text}_{int(time.time())}.png"
@@ -415,7 +469,8 @@ def start(update: Update, context: CallbackContext) -> int:
     try:
         user = update.effective_user
         username = user.username or user.first_name or "User"
-        user_data = get_user(user.id)
+        user_id = user.id
+        user_data = get_user(user_id)
         
         # Check if user exists
         if not user_data:
@@ -423,19 +478,28 @@ def start(update: Update, context: CallbackContext) -> int:
             invited_by = None
             if context.args and context.args[0].startswith('ref'):
                 try:
-                    invited_by = int(context.args[0][3:])
-                except ValueError:
-                    pass
-            invite_code = create_user(user.id, username, invited_by)
+                    # Extract invite code from URL
+                    invite_code = context.args[0]
+                    
+                    # Find user with this invite code
+                    c.execute("SELECT user_id FROM users WHERE invite_code=?", (invite_code,))
+                    referrer = c.fetchone()
+                    
+                    if referrer:
+                        invited_by = referrer[0]
+                        logger.info(f"New user {user_id} came from referral by {invited_by}")
+                    else:
+                        logger.warning(f"Invalid invite code: {invite_code}")
+                except Exception as e:
+                    logger.error(f"Error processing referral: {e}")
             
-            # Reward referrer
-            if invited_by:
-                update_balance(invited_by, INVITE_REWARD)
-                increment_invite_count(invited_by)
+            # Create user with referral info
+            invite_code = create_user(user_id, username, invited_by)
+            logger.info(f"Created new user {user_id} with invite code {invite_code}")
             
             # Show registration message for new users
             context.bot.send_message(
-                chat_id=user.id,
+                chat_id=user_id,
                 text=f"🌟 *Welcome to INVITOR CASH PH!* 🌟\n\n"
                      "💰 *REGISTRATION REQUIRED* 💰\n\n"
                      "To start earning money with our bot, you need to register first at our official partner site:\n\n"
@@ -462,13 +526,13 @@ def start(update: Update, context: CallbackContext) -> int:
             return -1
         
         # Get updated user data
-        user_data = get_user(user.id)
+        user_data = get_user(user_id)
         
         # Check if user can verify
-        if not user_data[6] and can_verify(user.id):
+        if not user_data[6] and can_verify(user_id):
             # Show verification button
             context.bot.send_message(
-                chat_id=user.id,
+                chat_id=user_id,
                 text=f"🌟 *Welcome back to INVITOR CASH PH!* 🌟\n\n"
                      "⏰ Your 3-minute waiting period is complete!\n\n"
                      "You can now complete verification:\n"
@@ -484,12 +548,12 @@ def start(update: Update, context: CallbackContext) -> int:
         
         # If not verified and can't verify yet
         if not user_data[6]:
-            remaining_time = get_remaining_wait_time(user.id)
+            remaining_time = get_remaining_wait_time(user_id)
             minutes = remaining_time // 60
             seconds = remaining_time % 60
             
             context.bot.send_message(
-                chat_id=user.id,
+                chat_id=user_id,
                 text=f"⏳ *Please wait {minutes:02d}:{seconds:02d}*\n\n"
                      "You need to wait 3 minutes after registration before you can verify.\n\n"
                      "💡 **Don't forget to register first:**\n"
@@ -502,7 +566,7 @@ def start(update: Update, context: CallbackContext) -> int:
         # If verified but hasn't joined channel
         if user_data[6] and not user_data[10]:
             context.bot.send_message(
-                chat_id=user.id,
+                chat_id=user_id,
                 text="📢 *CHANNEL JOIN REQUIRED* 📢\n\n"
                      "To access all features, you MUST join our official channel:\n"
                      f"👉 {REQUIRED_CHANNEL}\n\n"
@@ -590,7 +654,8 @@ def daily_signin(update: Update, context: CallbackContext):
         user_data = get_user(user_id)
         
         if not user_data:
-            update.message.reply_text("⚠️ Please restart with /start to register your account.")
+            if update.message:
+                update.message.reply_text("⚠️ Please restart with /start to register your account.")
             return
             
         # Check if user has joined channel
@@ -630,31 +695,35 @@ def start_quiz_game(update: Update, context: CallbackContext) -> int:
         user_data = get_user(user_id)
         
         if not user_data:
-            update.message.reply_text("⚠️ Please restart with /start to register your account.")
+            if update.message:
+                update.message.reply_text("⚠️ Please restart with /start to register your account.")
             return -1
             
         # Check if user has joined channel
         if not user_data[10]:
-            update.message.reply_text("⚠️ You must join our channel first!\n"
-                                      f"Please join: {REQUIRED_CHANNEL}\n"
-                                      "and try again.")
+            if update.message:
+                update.message.reply_text("⚠️ You must join our channel first!\n"
+                                          f"Please join: {REQUIRED_CHANNEL}\n"
+                                          "and try again.")
             return -1
             
         # Check available questions
         available = get_available_quiz_questions(user_id)
         if available <= 0:
-            update.message.reply_text(
-                "❌ *No Quiz Questions Available!*\n\n"
-                "You've answered all your available questions.\n\n"
-                f"Invite {BONUS_QUESTIONS_THRESHOLD} friends to get {BONUS_QUESTIONS_PER_INVITE} bonus questions!",
-                parse_mode="Markdown"
-            )
+            if update.message:
+                update.message.reply_text(
+                    "❌ *No Quiz Questions Available!*\n\n"
+                    "You've answered all your available questions.\n\n"
+                    f"Invite {BONUS_QUESTIONS_THRESHOLD} friends to get {BONUS_QUESTIONS_PER_INVITE} bonus questions!",
+                    parse_mode="Markdown"
+                )
             return -1
             
         # Get a random question
         question_data = get_random_quiz_question()
         if not question_data:
-            update.message.reply_text("⚠️ Failed to load quiz questions. Please try again later.")
+            if update.message:
+                update.message.reply_text("⚠️ Failed to load quiz questions. Please try again later.")
             return -1
             
         # Store question in context
@@ -666,17 +735,19 @@ def start_quiz_game(update: Update, context: CallbackContext) -> int:
             [InlineKeyboardButton(opt1, callback_data=f"quiz_{question_id}_1")],
             [InlineKeyboardButton(opt2, callback_data=f"quiz_{question_id}_2")],
             [InlineKeyboardButton(opt3, callback_data=f"quiz_{question_id}_3")],
-            [InlineKeyboardButton(opt4, callback_data=f"quiz_{question_id}_4")]
+            [InlineKeyboardButton(opt4, callback_data=f"quiz_{question_id}_4")],
+            [InlineKeyboardButton("➡️ Next Question", callback_data="next_question")]
         ]
         
         # Send question
-        update.message.reply_text(
-            f"❓ *QUIZ QUESTION* ❓\n\n"
-            f"{question}\n\n"
-            "Select your answer:",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        if update.message:
+            update.message.reply_text(
+                f"❓ *QUIZ QUESTION* ❓\n\n"
+                f"{question}\n\n"
+                "Select your answer:",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
         
         return QUIZ_GAME
     except Exception as e:
@@ -731,38 +802,19 @@ def handle_quiz_answer(update: Update, context: CallbackContext) -> int:
         # Check for bonus questions after invites
         check_invites_for_bonus(user_id)
         
-        # Show remaining questions
-        available = get_available_quiz_questions(user_id)
-        if available > 0:
-            context.bot.send_message(
-                chat_id=user_id,
-                text=f"You have {available} questions remaining. Play again?",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🎮 Play Another Question", callback_data="play_quiz")
-                ]])
-            )
-        else:
-            context.bot.send_message(
-                chat_id=user_id,
-                text="❌ *No Quiz Questions Left!*\n\n"
-                     "You've answered all your available questions.\n\n"
-                     f"Invite {BONUS_QUESTIONS_THRESHOLD} friends to get {BONUS_QUESTIONS_PER_INVITE} bonus questions!",
-                parse_mode="Markdown"
-            )
-        
         return -1
     except Exception as e:
         logger.error(f"Error in handle_quiz_answer: {e}")
         return -1
 
-# Play quiz callback
-def play_quiz_callback(update: Update, context: CallbackContext) -> int:
+# Next question callback
+def next_question_callback(update: Update, context: CallbackContext) -> int:
     try:
         query = update.callback_query
         query.answer()
         return start_quiz_game(update, context)
     except Exception as e:
-        logger.error(f"Error in play_quiz_callback: {e}")
+        logger.error(f"Error in next_question_callback: {e}")
         return -1
 
 # Main menu display
@@ -943,7 +995,7 @@ def handle_captcha_answer(update: Update, context: CallbackContext) -> int:
         show_main_menu(update, context)
         return -1
 
-# Invite system
+# Invite system with different links
 def invite_friends(update: Update, context: CallbackContext):
     try:
         user_id = update.effective_user.id
@@ -962,7 +1014,16 @@ def invite_friends(update: Update, context: CallbackContext):
             return
 
         invite_code = user_data[3]
-        invite_link = f"https://t.me/{context.bot.username}?start={invite_code}"
+        
+        # Different invite links for variety
+        invite_links = [
+            f"https://t.me/{context.bot.username}?start={invite_code}",
+            f"https://telegram.me/{context.bot.username}?start={invite_code}",
+            f"https://t.me/share/url?url=join&text=Join%20Invitor%20Cash%20PH%20to%20earn%20money!&start={invite_code}"
+        ]
+        
+        # Select a random invite link
+        invite_link = random.choice(invite_links)
 
         update.message.reply_text(
             "👥 *INVITE & EARN* 👥\n\n"
@@ -1289,7 +1350,7 @@ def main() -> None:
     dispatcher.add_handler(CallbackQueryHandler(join_channel_callback, pattern='^join_channel$'))
     dispatcher.add_handler(CallbackQueryHandler(verify_withdrawal_callback, pattern='^verify_withdrawal$'))
     dispatcher.add_handler(CallbackQueryHandler(handle_quiz_answer, pattern='^quiz_'))
-    dispatcher.add_handler(CallbackQueryHandler(play_quiz_callback, pattern='^play_quiz$'))
+    dispatcher.add_handler(CallbackQueryHandler(next_question_callback, pattern='^next_question$'))
     
     # Menu handlers
     dispatcher.add_handler(MessageHandler(Filters.regex('^🎮 Play Captcha Game$'), start_captcha_game))
@@ -1329,10 +1390,22 @@ def main() -> None:
     dispatcher.add_handler(captcha_conv)
     dispatcher.add_handler(withdrawal_conv)
     
-    # Start the Bot
-    updater.start_polling()
-    logger.info("Telegram bot started successfully")
-    updater.idle()
+    # Start the Bot with error handling
+    try:
+        updater.start_polling()
+        logger.info("Telegram bot started successfully")
+        updater.idle()
+    except Exception as e:
+        logger.error(f"Bot polling error: {e}")
+        # Restart polling after a delay
+        import time
+        time.sleep(5)
+        try:
+            updater.start_polling()
+            logger.info("Telegram bot restarted successfully")
+            updater.idle()
+        except Exception as e2:
+            logger.error(f"Bot restart failed: {e2}")
 
 if __name__ == '__main__':
     main()
