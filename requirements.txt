@@ -2,3 +2,4 @@ python-telegram-bot==13.7
 captcha==0.4
 Pillow==10.0.0
 Flask==2.3.2
+urllib3==1.26.6
